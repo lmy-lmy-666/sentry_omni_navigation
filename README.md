@@ -6,7 +6,7 @@
 
 RoboMaster 2026 赛季哨兵机器人 ROS2 自主导航系统。**全向 (Mecanum) 底盘 + 独立云台 + 持续自旋**,基于 ROS2 Jazzy + Nav2 + 自研分层状态机决策 + Livox Mid360,纯实车运行。
 
-- **Maintainer**: boombroke <2218681402@qq.com>
+- **Maintainer**: [lmy-lmy-666](https://github.com/lmy-lmy-666)
 - **基于**: [pb2025_sentry_nav](https://github.com/SMBU-PolarBear-Robotics-Team/pb2025_sentry_nav)(Lihan Chen 等)二次开发并适配 RM2026 赛季
 - **当前分支**: `main`
 
@@ -120,6 +120,15 @@ tests/                                   # INV-1~7 状态机回归脚本(注入�
 | Python | 3.12+ |
 | 硬件 | Livox Mid360 + 麦轮全向底盘 + IMU |
 
+## 获取代码
+
+```bash
+git clone https://github.com/lmy-lmy-666/sentry_omni_navigation.git
+cd sentry_omni_navigation
+```
+
+> 本仓库自包含：`omni_decision_sample` 决策代码已内联（上游以 git submodule 方式引入 [lmy-lmy-666/sentry_decision](https://github.com/lmy-lmy-666/sentry_decision) 的 `omni_decision_sample` 分支），克隆后无需任何 submodule 初始化，可直接编译。
+
 ## 编译
 
 ```bash
@@ -217,7 +226,7 @@ python3 src/sentry_tools/serial_visualizer.py
 
 ## 致谢
 
-导航主线基于 [深圳北理莫斯科大学 PolarBear 战队](https://github.com/SMBU-PolarBear-Robotics-Team) 的 [pb2025_sentry_nav](https://github.com/SMBU-PolarBear-Robotics-Team/pb2025_sentry_nav)(原作者 Lihan Chen 等);Point-LIO 来自 [HKU-MARS](https://github.com/hku-mars/Point-LIO);地形分析源自 CMU。当前由 boombroke 维护并适配 RoboMaster 2026 赛季。
+导航主线基于 [深圳北理莫斯科大学 PolarBear 战队](https://github.com/SMBU-PolarBear-Robotics-Team) 的 [pb2025_sentry_nav](https://github.com/SMBU-PolarBear-Robotics-Team/pb2025_sentry_nav)(原作者 Lihan Chen 等);Point-LIO 来自 [HKU-MARS](https://github.com/hku-mars/Point-LIO);地形分析源自 CMU。当前由 lmy-lmy-666 维护并适配 RoboMaster 2026 赛季。
 
 ## 许可证
 

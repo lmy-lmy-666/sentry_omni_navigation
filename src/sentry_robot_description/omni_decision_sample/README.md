@@ -2,9 +2,9 @@
 
 > 哨兵自主导航调度器。只管一个问题：**下一步往哪走。**
 
-| 仓库 | 分支 | 本地路径 |
+| 来源仓库 | 分支 | 本仓库内路径 |
 |------|------|----------|
-| [lmy-lmy-666/sentry_decision](https://github.com/lmy-lmy-666/sentry_decision) | `omni_decision_sample` | `/home/lmy/omni_navigation/src/omni_decision_sample` |
+| [lmy-lmy-666/sentry_decision](https://github.com/lmy-lmy-666/sentry_decision) | `omni_decision_sample` | `src/sentry_robot_description/omni_decision_sample`（已内联，随本仓库分发） |
 
 ## 五个状态
 
