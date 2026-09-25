@@ -1,0 +1,85 @@
+version: "3.1"
+
+# ------------------------------------------------------------------------------
+# 串口协议 v3.1 —— 单一大包收发 + 统一帧格式 + 双向心跳/急停
+# ------------------------------------------------------------------------------
+# 帧格式（所有包统一）:
+#   [HEADER 1B] [LEN 1B] [PAYLOAD N B] [CRC16 2B]
+#   - LEN     : 仅 PAYLOAD 字节数 N
+#   - CRC16   : 覆盖 [HEADER..PAYLOAD]（共 N+2 字节），小端序追加在末尾
+#   - 总帧长  : 4 + N
+#
+# Header 段位约定:
+#   0x50-0x5F : MCU → ROS （上行 / RX from ROS 视角）
+#   0xA0-0xAF : ROS → MCU （下行 / TX from ROS 视角）
+#
+# v3.1 相对 v3.0：上行 3 包合并为 telemetry(0x50,200Hz,55B)；
+# 下行 nav_cmd+heartbeat 合并为 control(0xA0,20Hz+1Hz,20B)。
+#
+# 修改协议步骤:
+#   1) 改本文件
+#   2) cd src/serial/serial_driver/protocol && python3 generate.py
+#   3) 复制 generated/packet.hpp → ../include/rm_serial_driver/packet.hpp
+#      复制 generated/navigation_auto.h → ../example/navigation_auto.h
+#      复制 generated/protocol.py → ../../../../sentry_tools/protocol.py
+#        （从 protocol/ 目录：cp generated/protocol.py ../../../sentry_tools/protocol.py）
+#   4) colcon build --packages-select rm_serial_driver
+#   5) 同步重编电控固件
+# ------------------------------------------------------------------------------
+
+type_map:
+  uint8:  { c: uint8_t,  cpp: uint8_t,  python_struct: B, size: 1 }
+  uint16: { c: uint16_t, cpp: uint16_t, python_struct: H, size: 2 }
+  uint32: { c: uint32_t, cpp: uint32_t, python_struct: I, size: 4 }
+  float:  { c: float,    cpp: float,    python_struct: f, size: 4 }
+
+packets:
+
+  # ============================================================================
+  # MCU → ROS：telemetry 大包, 200Hz, 55B (payload 51B)
+  # IMU + 底盘反馈 + 裁判数据；慢变量由 MCU 缓存，每 5ms 组包发送。
+  # ============================================================================
+  telemetry:
+    header: 0x50
+    direction: stm32_to_ros
+    frequency_hz: 200
+    fields:
+      - { name: gimbal_pitch,     type: float,  unit: rad,    desc: "云台 pitch（绕 y）" }
+      - { name: gimbal_yaw,       type: float,  unit: rad,    desc: "云台 yaw（绕 z）" }
+      - { name: chassis_pitch,    type: float,  unit: rad,    desc: "车体 pitch（绕 y），轮足姿态" }
+      - { name: chassis_yaw,      type: float,  unit: rad,    desc: "车体 yaw（绕 z）" }
+      - { name: mcu_timestamp_ms, type: uint16, unit: ms,     desc: "MCU 时间戳低 16 位" }
+      - { name: current_hp,                type: uint16, unit: hp,    desc: "本机当前血量" }
+      - { name: projectile_allowance_17mm, type: uint16, unit: count, desc: "17mm 弹丸剩余发射次数" }
+      - { name: chassis_power,             type: float,  unit: W,     desc: "底盘实时功率" }
+      - { name: chassis_mode,              type: uint8,                desc: "电控实际模式 0=normal 1=spin_low 2=spin_high 3=estop" }
+      - { name: reserved,                  type: uint8,                desc: "字节对齐占位" }
+      - { name: game_progress,     type: uint8,  desc: "0=未开始 1=准备 2=自检 3=5s倒计时 4=比赛中 5=结算" }
+      - { name: stage_remain_time, type: uint16, unit: s,    desc: "当前阶段剩余时间" }
+      - { name: team_colour,       type: uint8,              desc: "1=红方 0=蓝方" }
+      - { name: rfid_base,         type: uint8,              desc: "己方基地增益点 RFID（1=触发）" }
+      - { name: ally_1_robot_hp,   type: uint16, unit: hp,   desc: "己方 1 号英雄血量" }
+      - { name: ally_2_robot_hp,   type: uint16, unit: hp,   desc: "己方 2 号工程血量" }
+      - { name: ally_3_robot_hp,   type: uint16, unit: hp,   desc: "己方 3 号步兵血量" }
+      - { name: ally_4_robot_hp,   type: uint16, unit: hp,   desc: "己方 4 号步兵血量" }
+      - { name: ally_7_robot_hp,   type: uint16, unit: hp,   desc: "己方 7 号哨兵血量" }
+      - { name: ally_outpost_hp,   type: uint16, unit: hp,   desc: "己方前哨站血量" }
+      - { name: ally_base_hp,      type: uint16, unit: hp,   desc: "己方基地血量" }
+      - { name: event_data,        type: uint32, desc: "事件数据 bitfield" }
+
+  # ============================================================================
+  # ROS → MCU：control 大包, 20Hz(cmd_vel)+1Hz(心跳), 20B (payload 16B)
+  # 导航速度 + mode + ros_state；任意 control 帧 CRC 正确即刷新看门狗。
+  # ============================================================================
+  control:
+    header: 0xA0
+    direction: ros_to_stm32
+    frequency_hz: 20
+    fields:
+      - { name: lx,         type: float, unit: m/s,   desc: "底盘 body 系前向线速度" }
+      - { name: ly,         type: float, unit: m/s,   desc: "底盘 body 系侧向线速度" }
+      - { name: az,         type: float, unit: rad/s, desc: "底盘角速度 / 自旋速度" }
+      - { name: mode,       type: uint8, desc: "0=normal 1=spin_low 2=spin_high 3=estop" }
+      - { name: reserved,   type: uint8, desc: "字节对齐占位" }
+      - { name: ros_state,  type: uint8, desc: "0=init 1=ready 2=running 3=fault" }
+      - { name: reserved2,  type: uint8, desc: "字节对齐占位" }

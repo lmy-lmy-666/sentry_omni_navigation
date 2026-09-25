@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>omni_pid_pursuit_controller</name>
+  <version>1.0.3</version>
+  <description>全向麦克纳姆底盘的 Nav2 控制器插件，实现纯跟踪加双 PID（平移/旋转）路径跟踪，支持曲率限速、障碍物检测与接近减速。插件类名：omni_pid_pursuit_controller::OmniPidPursuitController。</description>
+  <maintainer email="2218681402@qq.com">boombroke</maintainer>
+  <license>Apache-2.0</license>
+  <author email="2218681402@qq.com">boombroke</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>nav2_common</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_util</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>pluginlib</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_clang_format</test_depend>
+  <test_depend>ament_cmake_black</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <nav2_core plugin="${prefix}/omni_pid_pursuit_controller.xml" />
+  </export>
+
+</package>

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sentry_match_recorder</name>
+  <version>0.1.0</version>
+  <description>Auto rosbag recorder triggered by referee game_progress for RoboMaster sentry robot. Debounced state machine spawns ros2 bag record on match start and stops on match end.</description>
+
+  <maintainer email="2218681402@qq.com">boombroke</maintainer>
+  <license>Apache-2.0</license>
+  <author email="2218681402@qq.com">boombroke</author>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>rm_interfaces</depend>
+
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_mcap</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

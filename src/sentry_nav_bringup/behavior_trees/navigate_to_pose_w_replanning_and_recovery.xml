@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Nav2 navigate_to_pose 内置树, 哨兵主线裁剪版.
+
+  与上游模板差别:
+    - <RecoveryActions> 删掉 1.5m BackUp + 长 BackUpThenClear: 实测 backup 一旦
+      下发到 behavior_server 必须等 ~10s timeout 才能 cancel, 期间状态机新发的目标点
+      虽然立即 preempt navigate_to_pose action, 但 RecoveryFallback 已经
+      转 RUNNING 给 behavior_server, GoalUpdated 重判后 BT 端 halt 但 server 端
+      DriveOnHeading 不会立即停, 表现为"目标点切了但机器人还在 backup".
+    - 只保留 ClearAndWait (清 costmap + 0.5s 休) 作 round-robin 恢复, 反复跑
+      直到 number_of_retries 用完. ClearCostmap 是 service 调用, ms 级返回,
+      不会被新 goal 卡住.
+    - GoalUpdated 仍在 ReactiveFallback 第一项, 新 goal 进来时 BT 立即跳出
+      RecoveryActions 回到主分支重新规划.
+-->
+<root BTCPP_format="3"
+      main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode name="NavigateRecovery"
+                  number_of_retries="10">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode name="ComputePathToPose"
+                        number_of_retries="3">
+            <ComputePathToPose goal="{goal}"
+                               path="{path}"
+                               planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode name="FollowPath"
+                      number_of_retries="3">
+          <FollowPath path="{path}"
+                      controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                              service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <Sequence name="ClearAndWait">
+          <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
+                              service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
+                              service_name="global_costmap/clear_entirely_global_costmap"/>
+          <Wait wait_duration="0.5"/>
+        </Sequence>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -1,0 +1,13 @@
+sentry_behavior_node:
+  ros__parameters:
+    use_sim_time: false
+    strategy: rmuc_defend          # rmuc_defend / a / b
+    tick_frequency: 20.0           # Hz, 状态机主循环
+    viz_enable: true               # 内嵌 TCP NDJSON 状态可视化协议
+    viz_port: 1667                 # 可视化端口 (供独立 Rust/C 客户端连接)
+    # 战术阈值 (默认 = 各策略原生效语义); 不重编即可调
+    rmuc_hp_min: 151
+    attack_hp_min: 300
+    patrol_hp_min: 300
+    ammo_min: 1
+    outpost_hp_min: 1

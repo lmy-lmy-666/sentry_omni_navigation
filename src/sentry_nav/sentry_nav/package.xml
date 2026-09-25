@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sentry_nav</name>
+  <version>1.3.1</version>
+  <description>Meta-package for the sentry robot navigation stack; aggregates odom_bridge, fake_vel_transform, omni_pid_pursuit_controller, nav2_plugins, small_gicp_relocalization, point_lio, terrain_analysis and related packages.</description>
+  <maintainer email="2218681402@qq.com">boombroke</maintainer>
+  <license>Apache-2.0</license>
+  <author email="2218681402@qq.com">boombroke</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- pb25_nav_bringup doesn't belong for recursive dependencies -->
+  <depend>fake_vel_transform</depend>
+  <depend>odom_bridge</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

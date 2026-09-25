@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+	<name>sentry_robot_description</name>
+	<version>1.0.0</version>
+	<description>SDF/XMacro robot description for RoboMaster 2026 sentry (Mecanum omni chassis + Mid360 + gimbal).</description>
+
+	<maintainer email="2218681402@qq.com">boombroke</maintainer>
+	<license>Apache-2.0</license>
+	<author email="2218681402@qq.com">boombroke</author>
+
+	<buildtool_depend>ament_cmake</buildtool_depend>
+
+	<exec_depend>ament_index_python</exec_depend>
+	<exec_depend>launch</exec_depend>
+	<exec_depend>launch_ros</exec_depend>
+	<exec_depend>xacro</exec_depend>
+	<exec_depend>nav2_common</exec_depend>
+	<exec_depend>sdformat_tools</exec_depend>
+
+	<depend>rmoss_gz_resources</depend>
+
+	<test_depend>ament_cmake_gtest</test_depend>
+	<test_depend>ament_lint_auto</test_depend>
+	<test_depend>ament_lint_common</test_depend>
+
+	<export>
+		<build_type>ament_cmake</build_type>
+	</export>
+</package>

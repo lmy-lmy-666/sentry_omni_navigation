@@ -1,0 +1,166 @@
+# Copyright 2025 Lihan Chen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    bringup_dir = get_package_share_directory("sentry_nav_bringup")
+    serial_dir = get_package_share_directory("rm_serial_driver")
+    launch_dir = os.path.join(bringup_dir, "launch")
+
+    namespace = LaunchConfiguration("namespace")
+    slam = LaunchConfiguration("slam")
+    world = LaunchConfiguration("world")
+    use_rviz = LaunchConfiguration("use_rviz")
+    use_foxglove = LaunchConfiguration("use_foxglove")
+    enable_recorder = LaunchConfiguration("enable_recorder")
+    enable_behavior = LaunchConfiguration("enable_behavior")
+    profile = LaunchConfiguration("profile")
+
+    declare_namespace_cmd = DeclareLaunchArgument(
+        "namespace",
+        default_value="",
+        description="Top-level namespace",
+    )
+
+    declare_slam_cmd = DeclareLaunchArgument(
+        "slam",
+        default_value="False",
+        description="Whether to run SLAM instead of localization",
+    )
+
+    declare_world_cmd = DeclareLaunchArgument(
+        "world",
+        default_value="204",
+        description="Map/PCD base name under map/reality and pcd/reality (e.g. 204, rmul_2026)",
+    )
+
+    declare_use_rviz_cmd = DeclareLaunchArgument(
+        "use_rviz",
+        default_value="True",
+        description="Whether to start RViz",
+    )
+
+    declare_use_foxglove_cmd = DeclareLaunchArgument(
+        "use_foxglove",
+        default_value="False",
+        description="Whether to start foxglove_bridge",
+    )
+
+    declare_enable_recorder_cmd = DeclareLaunchArgument(
+        "enable_recorder",
+        default_value="True",
+        description="Whether to start sentry_match_recorder (auto rosbag on game_progress=4)",
+    )
+
+    declare_enable_behavior_cmd = DeclareLaunchArgument(
+        "enable_behavior",
+        default_value="True",
+        description="Whether to start omni_decision_sample (decision node)",
+    )
+
+    declare_profile_cmd = DeclareLaunchArgument(
+        "profile",
+        default_value="rmuc_red.yaml",
+        description=(
+            "omni_decision_sample tactic profile. Bare filename (e.g. rmuc_red.yaml / "
+            "rmuc_blue.yaml) resolves against config/profiles/; a path is used as-is."
+        ),
+    )
+
+    navigation_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(launch_dir, "rm_navigation_reality_launch.py")
+        ),
+        launch_arguments={
+            "namespace": namespace,
+            "slam": slam,
+            "world": world,
+            "use_rviz": use_rviz,
+            "use_foxglove": use_foxglove,
+            "use_robot_state_pub": "True",
+            "use_serial_driver": "False",
+        }.items(),
+    )
+
+    serial_config = os.path.join(serial_dir, "config", "serial_driver.yaml")
+
+    serial_driver_node = Node(
+        package="rm_serial_driver",
+        executable="rm_serial_driver_node",
+        namespace=namespace,
+        output="screen",
+        emulate_tty=True,
+        parameters=[serial_config],
+        arguments=["--ros-args", "--log-level", "rm_serial_driver:=info"],
+    )
+
+    recorder_dir = get_package_share_directory("sentry_match_recorder")
+    recorder_launch_cmd = TimerAction(
+        period=5.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(recorder_dir, "launch", "match_recorder_launch.py")
+                ),
+            )
+        ],
+        condition=IfCondition(enable_recorder),
+    )
+
+    decision_dir = get_package_share_directory("omni_decision_sample")
+    behavior_launch_cmd = TimerAction(
+        period=8.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(
+                        decision_dir, "launch", "omni_decision_sample_launch.py"
+                    )
+                ),
+                launch_arguments={
+                    "profile": profile,
+                }.items(),
+            )
+        ],
+        condition=IfCondition(enable_behavior),
+    )
+
+    ld = LaunchDescription()
+
+    ld.add_action(declare_namespace_cmd)
+    ld.add_action(declare_slam_cmd)
+    ld.add_action(declare_world_cmd)
+    ld.add_action(declare_use_rviz_cmd)
+    ld.add_action(declare_use_foxglove_cmd)
+    ld.add_action(declare_enable_recorder_cmd)
+    ld.add_action(declare_enable_behavior_cmd)
+    ld.add_action(declare_profile_cmd)
+
+    ld.add_action(navigation_cmd)
+    ld.add_action(serial_driver_node)
+    ld.add_action(recorder_launch_cmd)
+    ld.add_action(behavior_launch_cmd)
+
+    return ld

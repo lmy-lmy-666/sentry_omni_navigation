@@ -1,0 +1,84 @@
+# RMUC tactic profile — BLUE side (simplified).
+
+name: rmuc_blue
+
+thresholds:
+  max_hp: 400            # 满血目标 (全自动哨兵=400; 串口 0x0201 不上报 maximum_hp, 必须在此配置)
+  hp_low: 150            # enter RESUPPLY below this hp
+  ammo_low: 50           # enter RESUPPLY at/below this ammo
+  ammo_ok: 100           # leave RESUPPLY at/above this ammo (one free +100/min cycle)
+  game_total_time: 420
+  min_ticks_in_state: 4
+  stuck_timeout_s: 10.0      # per-waypoint patrol timeout → skip to next
+  resupply_timeout_s: 30.0   # single supply-point timeout → rotate to next (never gives up)
+  referee_stale_timeout_s: 3.0
+  opening_strike_duration_s: 90.0   # 开局在打点位停留时长(秒), 让自瞄摧毁敌方前哨站; 凭自瞄DPS实测调
+  # --- 过起伏路段 (舵轮纯直线开环冲, 绕过 Nav2) ---
+  bump_dash_speed: 0.8       # m/s 冲起伏段恒速(不减速, 靠冲量翻波浪); 实测先0.8再往上加
+  bump_reverse_speed: 0.4    # m/s 失败反向退回速度
+  bump_tol: 0.25             # m   出口 x 到达容差(比Nav2放宽, 吸收颠簸定位抖动)
+  bump_entry_radius: 0.5     # m   距入口多近就 cancel Nav2 接管, 也是 y 走廊门限
+  bump_y_tol: 0.10           # m   入口/出口 y 偏差上限(段必须沿 x 轴直线, 配置校验用)
+  bump_align_time_s: 0.5     # s   cancel Nav2 后静默期(等舵轮转正 + 速度链路排空)
+  bump_timeout_s: 20.0       # s   穿越超时 → 反向退回
+  bump_stop_ticks: 3         # 到达后发几帧零速再交还业务状态
+
+# =============================================================================
+# ⚠️  坐标标定清单 (TODO: 上场前必须用实车在比赛地图逐点标定)
+# =============================================================================
+# 下面所有 x/y 均为【占位符】，未经实车验证。标定方法：
+#   1. 启动定位栈，把哨兵手动推到目标位置
+#   2. ros2 topic echo <odom话题> --once  读取 pose.pose.position 的 x/y
+#   3. 填入下方对应字段
+# 坐标系 = map (与 goal_frame 参数一致)。共需标定 6 个位置：
+#   [ ] opening_strike      开局打前哨站位 (自瞄能打到敌方前哨站)
+#   [ ] patrol[0]           默认巡逻点1
+#   [ ] patrol[1]           默认巡逻点2
+#   [ ] patrol[2]           默认巡逻点3
+#   [ ] patrol_aggressive   前压点
+#   [ ] supply              补给点 (★最关键，必须验证可达)
+# =============================================================================
+
+# ★ 开局打点位: 比赛一开始先来这里, 让自瞄打敌方前哨站, 停留 opening_strike_duration_s 后转正常行为(只做一次)
+#   删掉此项 → 关闭开局打前哨站功能, 直接进巡逻
+opening_strike: {x: -2.0, y: 0.0}        # TODO 实车标定 (自瞄能打到敌方前哨站的位置)
+
+# --- default patrol loop (used when our outpost is destroyed → 我方半场防守) ---
+patrol:
+  - {x: -3.88, y: 2.67, dwell_s: 10.0}   # TODO 实车标定
+  - {x: -4.24, y: -2.54, dwell_s: 15.0}  # TODO 实车标定
+  - {x: -3.85, y: 2.58, dwell_s: 10.0}   # TODO 实车标定
+
+# --- aggressive patrol while our outpost is alive (前压) ---
+patrol_aggressive:
+  - {x: -8.0, y: 0.0, dwell_s: 10.0}     # TODO 实车标定
+
+# ★ 补给点 = 唯一恢复点 + 阵亡复活回归点，务必验证 Nav2 能规划到达
+supply: {x: 1.02, y: -4.91}              # TODO 实车标定 (最关键)
+
+backup_supply_points: []
+
+# =============================================================================
+# 过起伏路段 (波浪形颠簸地形) —— 位置感知自动触发
+# =============================================================================
+# 机制/约束同 rmuc_red.yaml。舵轮纯直线恒速冲, entry.y 必须≈exit.y(否则启动报错)。
+#
+# ★★★ 标定方法(每个数值怎么来) ★★★
+#   entry/exit: 把车手推到起伏段两侧的【平地】上, 各读一次坐标:
+#       ros2 topic echo /odometry --field pose.pose.position --once   (话题名按实际改)
+#   yaw: 冲刺车头朝向(弧度)。entry.y≈exit.y 时只有两种取值:
+#       exit.x > entry.x (往+x冲) → yaw: 0.0
+#       exit.x < entry.x (往-x冲) → yaw: 3.14159
+#   方向(正冲/反冲)代码自动判, 只需填对 entry/exit 两点, 前压/撤退双向复用同一段。
+#
+# ★★★ 怎么启用: 把下面某段的 4 行(entry/exit/yaw)前的 '# ' 去掉, 填入实测值即可 ★★★
+#   保持全部注释 = 关闭过起伏功能(bump_segments 为空)。
+# ⚠️ 蓝方坐标与红方镜像, 各自实测标定, 不要靠对称推算。
+# 参考(sentry_nav_ws RMUC2026, 仅换算参考): 敌方 (13.675,5.805)->(19.650,5.805)
+bump_segments:
+  # --- 起伏段 1 (去掉下面 3 行的 '# ' 并填值即可启用) ---
+  # - entry: {x: 0.00, y: 0.00}    # TODO 起伏段一侧平地实测坐标
+  #   exit:  {x: 0.00, y: 0.00}    # TODO 另一侧平地实测坐标 (y 必须与 entry 相同!)
+  #   yaw: 0.0                     # TODO 冲刺朝向: exit.x>entry.x填0.0, exit.x<entry.x填3.14159
+  
+  

@@ -1,0 +1,9 @@
+/rm_serial_driver:
+  ros__parameters:
+    # Navigation MCU; verified by 0x50/55-byte telemetry CRC. ACM numbering may change.
+    device_name: /dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_3056357F3034-if00
+    baud_rate: 115200
+    flow_control: none
+    parity: none
+    stop_bits: "1"
+
