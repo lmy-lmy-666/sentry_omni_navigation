@@ -41,6 +41,7 @@ def generate_launch_description():
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration("namespace")
+    localization_params_file = LaunchConfiguration("localization_params_file")
     slam = LaunchConfiguration("slam")
     map_yaml_file = LaunchConfiguration("map")
     prior_pcd_file = LaunchConfiguration("prior_pcd_file")
@@ -186,6 +187,7 @@ def generate_launch_description():
                     "autostart": autostart,
                     "params_file": params_file,
                     "prior_pcd_file": prior_pcd_file,
+                    "localization_params_file": localization_params_file,
                     "scan_context_db_file": scan_context_db_file,
                     "use_composition": use_composition,
                     "use_respawn": use_respawn,
@@ -216,7 +218,13 @@ def generate_launch_description():
     ld.add_action(stdout_linebuf_envvar)
     ld.add_action(colorized_output_envvar)
 
+    declare_localization_params_cmd = DeclareLaunchArgument(
+        "localization_params_file", default_value="auto",
+        description="Map-specific localization YAML; auto uses config/reality/localization/<map basename>.yaml; none disables overrides",
+    )
+
     # Declare the launch options
+    ld.add_action(declare_localization_params_cmd)
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_slam_cmd)
     ld.add_action(declare_map_yaml_cmd)

@@ -15,6 +15,7 @@
 #include <nav_msgs/msg/path.hpp>
 
 #include "li_initialization.h"
+#include "registered_pcd.hpp"
 
 using namespace std;
 
@@ -207,11 +208,15 @@ void publish_frame_world(
         pcd_index++;
         string all_points_dir(
           string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
-        pcl::PCDWriter pcd_writer;
-        std::cout << "current scan saved to /PCD/" << all_points_dir << '\n';
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
-        pcl_wait_save->clear();
-        scan_wait_num = 0;
+        if (point_lio::saveRegisteredPcd(all_points_dir, *pcl_wait_save,
+              g_odom_to_lidar_odom, g_odom_to_lidar_odom_received)) {
+          std::cout << "PCD chunk saved in odom frame: " << all_points_dir << '\n';
+          pcl_wait_save->clear();
+          scan_wait_num = 0;
+        } else {
+          --pcd_index;
+          RCLCPP_WARN(LOGGER, "PCD chunk not saved in odom; retaining points until transform/save is available");
+        }
       }
     }
   }
@@ -1058,17 +1063,19 @@ int main(int argc, char ** argv)
   // 1. make sure you have enough memories
   // 2. noted that pcd save will influence the real-time performances
   if (!pcl_wait_save->empty() && pcd_save_en) {
-    if (g_odom_to_lidar_odom_received) {
-      pcl::transformPointCloud(*pcl_wait_save, *pcl_wait_save,
-                               g_odom_to_lidar_odom.cast<float>().matrix());
-      std::cout << "PCD transformed to odom frame before saving" << '\n';
+    const string output = string(ROOT_DIR) + "PCD/scans.pcd";
+    if (!point_lio::saveRegisteredPcd(output, *pcl_wait_save,
+          g_odom_to_lidar_odom, g_odom_to_lidar_odom_received)) {
+      // Preserve recoverable raw data without presenting it as a navigation map.
+      const string raw = string(ROOT_DIR) + "PCD/scans_unregistered_lidar_odom.pcd";
+      const int status = pcl::io::savePCDFileBinary(raw, *pcl_wait_save);
+      RCLCPP_ERROR(LOGGER,
+        "Navigation PCD NOT saved: odom transform unavailable or write failed. "
+        "Raw LIO recovery file: %s (write status %d). Do not pair it with the 2D map.",
+        raw.c_str(), status);
     } else {
-      std::cout << "WARNING: odom_to_lidar_odom not received, PCD saved in lidar_odom frame" << '\n';
+      RCLCPP_INFO(LOGGER, "Navigation PCD saved in odom frame: %s", output.c_str());
     }
-    string file_name = string("scans.pcd");
-    string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
-    pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
   }
   fout_out.close();
   fout_imu_pbp.close();

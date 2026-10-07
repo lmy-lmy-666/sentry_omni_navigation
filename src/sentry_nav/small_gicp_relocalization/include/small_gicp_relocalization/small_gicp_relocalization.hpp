@@ -17,11 +17,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "pcl/io/pcd_io.h"
@@ -52,6 +54,18 @@ public:
 
 private:
   Eigen::Isometry3d poseSnapshot(uint64_t & generation);
+  std::pair<Eigen::Isometry3d, double> refinePlanarPose(
+    const pcl::PointCloud<pcl::PointXYZ> & source,
+    const Eigen::Isometry3d & seed) const;
+  bool geometricFitAcceptable(
+    const pcl::PointCloud<pcl::PointXYZ> & source,
+    const Eigen::Isometry3d & pose, double required_overlap = -1.0) const;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr validation_target_;
+  std::shared_ptr<small_gicp::KdTree<pcl::PointCloud<pcl::PointXYZ>>> validation_tree_;
+  double geometric_max_distance_{0.2};
+  double geometric_min_overlap_{0.8};
+  double localization_valid_timeout_{12.0};
+  std::atomic<int64_t> last_verified_ns_{0};
   bool commitPose(const Eigen::Isometry3d & pose, uint64_t generation);
   std::mutex pose_mutex_;
   uint64_t pose_generation_{0};
@@ -62,6 +76,7 @@ private:
   double max_correction_yaw_{0.2};
   double initial_max_correction_distance_{1.0};
   double initial_max_correction_yaw_{0.35};
+  bool initial_search_all_yaws_{false};
   void registeredPcdCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
   void periodicRegistrationCallback();
   void loadPcdFile(const std::string & file_name);
@@ -111,6 +126,7 @@ private:
   double quality_convergence_threshold_{0.008};
 
   int accumulated_count_;
+  std::deque<size_t> accumulated_frame_sizes_;
   std::vector<double> init_pose_;
 
   std::string map_frame_;

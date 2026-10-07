@@ -214,8 +214,40 @@ bringup_launch.py
 - `enable_periodic_relocalization: true` 必须开启，否则 small_gicp 不持续周期纠偏
 - PCD 先验地图与 2D 地图**必须在同一坐标系、同一起点**建图，不可混用不同 session 的产物
 - 实车入口（含 `rm_sentry_launch.py`）`world` 默认 `204`，需根据实际地图文件名覆盖
+- `small_gicp_relocalization.init_pose` 必须对应启动底盘在地图中的位姿。公共参数默认零位姿；`localization_params_file:=auto` 按地图 YAML 文件名加载 `config/reality/localization/<地图名>.yaml`，0927 也使用建图起点零初值，不再把某次运行中估计的朝向固化为启动配置。显式传入其他 YAML 可以覆盖；`localization_params_file:=none` 关闭地图专属覆盖。
+- 起点位置改变时，用 RViz **2D Pose Estimate** 或定位 profile 指定初值。`initial_search_all_yaws: true` 在初值位置 1 m 范围内搜索全部朝向，要求至少 95% 三维重合、截断距离均方根 <7.5 cm，并拒绝相隔 >20° 或 >40 cm 且分数相近的竞争解。它解决启动朝向超出局部搜索范围的问题，不保证未知位置或对称场地中的全局定位；关闭该选项恢复窄朝向先验。
+- 重定位同时检查实际三维点到先验地图的距离：至少 80% 的采样墙面点落在 15 cm 内才提交结果。优化器收敛或低分数本身不再代表对齐。`/localization_valid` 在初值未验证或连续 3 秒没有新的有效匹配时为 false；该状态本身不等同于底盘制动。
+- 点云累积使用最近 15 帧的滑动窗口，定位周期为 1 秒，避免拿几秒前的观测修正当前 TF。
+- 冷启动和周期定位在 GICP 粗配准后，用保留高度的三维最近邻距离精修 x/y/yaw，并比较从初值直接精修的结果。这样减少 XY 体素划分随里程计坐标朝向变化引入的配准偏差；仍需通过纠偏幅度和三维重叠率检查。
+- SLAM 模式的二维地图固定在 odom 下；Point-LIO 的周期 PCD 和退出保存 PCD 均转换到 odom。没有收到坐标变换时，不输出可供导航使用的原始坐标 PCD；退出时只保存明确命名的 `scans_unregistered_lidar_odom.pcd` 供恢复，不能直接与二维地图配对。
 
 详细调优推导见 [`src/docs/TUNING_GUIDE.md`](../docs/TUNING_GUIDE.md)。
+
+---
+
+## 点云对齐回归
+
+先 `source install/setup.bash`。离线测试必须使用隔离的 ROS domain，避免把测试位姿发给实车：
+
+```bash
+ROS_DOMAIN_ID=174 python3 tests/pointcloud_alignment_regression.py
+ROS_DOMAIN_ID=175 python3 tests/map_profile_regression.py
+ROS_DOMAIN_ID=176 python3 tests/odom_geometry_regression.py
+ROS_DOMAIN_ID=173 python3 tests/localization_regression.py
+ROS_DOMAIN_ID=173 python3 tests/odom_scan_timestamp_regression.py
+ROS_DOMAIN_ID=173 python3 tests/navigation_visibility_regression.py
+```
+
+`pointcloud_alignment_regression.py --real-dir <采样目录>` 还可回放真实点云，需要 `prior.npy`、`before/registered_scan.npy` 与 `reference_pose.json`。可用 `tests/capture_alignment_fixture.py --pcd <先验PCD> --out <采样目录>` 采集；存入工作区日志目录以免重启后丢失。合成场景检查已知位姿误差、多个地图和朝向、噪声/缺失点、错误地图/朝向/坐标系、断流恢复、手动初值和观测更新时效。真实回放不是实车移动测试。加 `--heading-search --test-zero-seed` 可测试已知起点的全朝向搜索、对称歧义拒绝和真实扫描的零初值启动。
+
+静止实机重启验收脚本会实际停止指定 launch，然后重复启动导航（决策关闭，不发送目标）。使用前保持机器人静止，确认指定 PID 正是要停止的导航 launch：
+
+```bash
+python3 tests/live_alignment_restart.py --world 0927 --stop-launch-pid <PID> \
+  --restarts 5 --duration 45 --output-dir logs/live_alignment_restart
+```
+
+每轮至少 10 个有效采样窗口，首次定位后不得再次出现无效状态；每个窗口的三维墙面点到先验 PCD 的距离中位数 <7 cm、90 分位 <20 cm、15 cm 内占比 >80% 才通过。失败写入 `results.json`，超标窗口保存为 `run*_bad_*.npy`，并记录初始串口关节角、关节发布值与 odom 变换，不会丢弃坏窗口。该距离是与地图的一致性，不能替代外部测量的绝对定位精度；静止测试也不覆盖行驶、自旋、上坡或真实异地建图。
 
 ---
 

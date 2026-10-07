@@ -17,7 +17,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, GroupAction, SetEnvironmentVariable, OpaqueFunction, LogInfo
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import LoadComposableNodes, Node
@@ -30,6 +30,7 @@ def generate_launch_description():
     bringup_dir = get_package_share_directory("sentry_nav_bringup")
 
     namespace = LaunchConfiguration("namespace")
+    localization_params_file = LaunchConfiguration("localization_params_file")
     map_yaml_file = LaunchConfiguration("map")
     use_sim_time = LaunchConfiguration("use_sim_time")
     autostart = LaunchConfiguration("autostart")
@@ -141,20 +142,33 @@ def generate_launch_description():
     )
 
     # Large PCD preprocessing must not block map_server lifecycle activation.
-    start_relocalization_node = Node(
-        package="small_gicp_relocalization",
-        executable="small_gicp_relocalization_node",
-        name="small_gicp_relocalization",
-        output="screen",
-        respawn=use_respawn,
-        respawn_delay=2.0,
-        parameters=[
-            configured_params,
+    def start_relocalization(context):
+        profile = localization_params_file.perform(context)
+        if profile == "none":
+            profile = ""
+        if profile == "auto":
+            map_name = os.path.splitext(os.path.basename(map_yaml_file.perform(context)))[0]
+            candidate = os.path.join(bringup_dir, "config", "reality", "localization", map_name + ".yaml")
+            profile = candidate if os.path.isfile(candidate) else ""
+        if profile and not os.path.isfile(profile):
+            raise FileNotFoundError("Localization profile does not exist: " + profile)
+        parameters = [configured_params]
+        if profile:
+            parameters.append(ParameterFile(profile, allow_substs=True))
+        parameters.extend([
             {"prior_pcd_file": prior_pcd_file},
             {"scan_context_db_file": scan_context_db_file},
-        ],
-        arguments=["--ros-args", "--log-level", log_level],
-    )
+        ])
+        return [
+            LogInfo(msg="Localization profile: " + (profile or "base parameters (no map override)")),
+            Node(package="small_gicp_relocalization",
+                 executable="small_gicp_relocalization_node",
+                 name="small_gicp_relocalization", namespace="/" + namespace.perform(context).strip("/"), output="screen",
+                 respawn=use_respawn, respawn_delay=2.0, parameters=parameters,
+                 arguments=["--ros-args", "--log-level", log_level]),
+        ]
+
+    start_relocalization_node = OpaqueFunction(function=start_relocalization)
 
     load_nodes = GroupAction(
         condition=IfCondition(PythonExpression(["not ", use_composition])),
@@ -216,7 +230,13 @@ def generate_launch_description():
     ld.add_action(stdout_linebuf_envvar)
     ld.add_action(colorized_output_envvar)
 
+    declare_localization_params_cmd = DeclareLaunchArgument(
+        "localization_params_file", default_value="auto",
+        description="Map-specific localization YAML; auto uses config/reality/localization/<map basename>.yaml; none disables overrides",
+    )
+
     # Declare the launch options
+    ld.add_action(declare_localization_params_cmd)
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_map_yaml_cmd)
     ld.add_action(declare_use_sim_time_cmd)

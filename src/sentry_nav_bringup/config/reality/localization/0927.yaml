@@ -1,0 +1,6 @@
+# 0927 建图起点、建图底盘朝向。换起点或朝向用 2D Pose Estimate。
+# 不把某一次启动后估计出的 map->odom 当成所有重启的固定初值。
+/**:
+  ros__parameters:
+    init_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    initial_max_correction_yaw: 0.35

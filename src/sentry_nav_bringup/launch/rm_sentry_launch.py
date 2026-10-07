@@ -30,6 +30,7 @@ def generate_launch_description():
     launch_dir = os.path.join(bringup_dir, "launch")
 
     namespace = LaunchConfiguration("namespace")
+    localization_params_file = LaunchConfiguration("localization_params_file")
     slam = LaunchConfiguration("slam")
     world = LaunchConfiguration("world")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -37,6 +38,11 @@ def generate_launch_description():
     enable_recorder = LaunchConfiguration("enable_recorder")
     enable_behavior = LaunchConfiguration("enable_behavior")
     profile = LaunchConfiguration("profile")
+
+    declare_localization_params_cmd = DeclareLaunchArgument(
+        "localization_params_file", default_value="auto",
+        description="Map-specific localization YAML; auto uses config/reality/localization/<map basename>.yaml; none disables overrides",
+    )
 
     declare_namespace_cmd = DeclareLaunchArgument(
         "namespace",
@@ -97,6 +103,7 @@ def generate_launch_description():
             "namespace": namespace,
             "slam": slam,
             "world": world,
+            "localization_params_file": localization_params_file,
             "use_rviz": use_rviz,
             "use_foxglove": use_foxglove,
             "use_robot_state_pub": "True",
@@ -149,6 +156,7 @@ def generate_launch_description():
 
     ld = LaunchDescription()
 
+    ld.add_action(declare_localization_params_cmd)
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_slam_cmd)
     ld.add_action(declare_world_cmd)

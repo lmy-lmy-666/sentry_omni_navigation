@@ -188,8 +188,12 @@ small_gicp_relocalization:
     registration_height_filter: true
     registration_min_height: 0.2
     registration_max_height: 1.5
-    global_leaf_size: 0.3
-    registered_leaf_size: 0.3
+    global_leaf_size: 0.1
+    registered_leaf_size: 0.1
+    # 独立于 GICP Mahalanobis 分数的实际三维重合检查。
+    geometric_max_distance: 0.15
+    geometric_min_overlap: 0.8
+    localization_valid_timeout: 3.0
     max_dist_sq: 4.0
     map_frame: "map"
     odom_frame: "odom"
@@ -200,11 +204,14 @@ small_gicp_relocalization:
     # 填入出生点在 map 下的真实位姿 [x, y, z, roll, pitch, yaw]（yaw 单位: rad）。
     # 初始位姿是 map→odom 的匹配种子；零位置不等于零朝向。
     # 已知起点的首次局部匹配必须留在种子附近，不能仅凭分数接受远处匹配。
-    init_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # 当前 0927 场地：用户确认回到建图起点和朝向
+    # 新地图默认使用建图启动底盘原点。已有地图的标定值放在独立 profile 中。
+    # localization_params_file:=auto 按地图 YAML 文件名选 config/reality/localization/<name>.yaml。
+    init_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     initial_max_correction_distance: 1.0  # 首次相对初值的平移上限，m
     initial_max_correction_yaw: 0.35  # 首次相对初值的朝向上限，rad（约20°）
+    initial_search_all_yaws: true  # 已知起点附近搜索启动朝向；要求95%三维重合且无近似等价解
     max_iterations: 50
-    accumulated_count_threshold: 30  # 30 Hz 输入约 1 秒，避免冷启动积帧等待
+    accumulated_count_threshold: 15  # 30 Hz 输入最近约 0.5 秒；滑动窗口持续更新
     min_range: 0.3
     min_inlier_ratio: 0.3
     max_fitness_error: 0.3                               # 放宽：SC 验证需要松一点，稀疏点云下 0.2 太紧
@@ -213,7 +220,7 @@ small_gicp_relocalization:
     publish_initial_pose_tf: true  # 未匹配时显示初始种子；localization_valid 区分匹配状态
     lock_after_initialpose: false  # RViz 位姿作为新种子，继续局部精调
     max_correction_yaw: 0.2  # 单次方向修正上限，rad
-    relocalization_interval: 5.0                       # 平衡：不过于频繁也不过于稀疏
+    relocalization_interval: 1.0  # 避免旧扫描导致实时点云纠偏滞后
     max_correction_distance: 1.5                        # 单次纠偏上限，卡小防止跳到对称另一半
     emergency_max_dist_sq: 64.0                         # 8m 搜索半径（emergency 实质已禁用，见下）
     emergency_max_correction_distance: 1.5              # 对齐 periodic 上限

@@ -38,8 +38,18 @@ SmallGicpRelocalizationNode::SmallGicpRelocalizationNode(const rclcpp::NodeOptio
   previous_result_t_(Eigen::Isometry3d::Identity()),
   has_localized_(false)
 {
+  geometric_max_distance_ = this->declare_parameter("geometric_max_distance", 0.2);
+  geometric_min_overlap_ = this->declare_parameter("geometric_min_overlap", 0.8);
+  localization_valid_timeout_ = this->declare_parameter("localization_valid_timeout", 12.0);
+  if (!std::isfinite(geometric_max_distance_) || geometric_max_distance_ <= 0.0 ||
+      !std::isfinite(geometric_min_overlap_) || geometric_min_overlap_ <= 0.0 ||
+      geometric_min_overlap_ > 1.0 || !std::isfinite(localization_valid_timeout_) ||
+      localization_valid_timeout_ <= 0.0) {
+    throw std::invalid_argument("Invalid geometric alignment / validity timeout parameters");
+  }
   this->declare_parameter("initial_max_correction_distance", 1.0);
   this->declare_parameter("initial_max_correction_yaw", 0.35);
+  initial_search_all_yaws_ = this->declare_parameter("initial_search_all_yaws", false);
   this->get_parameter("initial_max_correction_distance", initial_max_correction_distance_);
   this->get_parameter("initial_max_correction_yaw", initial_max_correction_yaw_);
   this->declare_parameter("publish_initial_pose_tf", true);
@@ -300,6 +310,121 @@ Eigen::Isometry3d SmallGicpRelocalizationNode::poseSnapshot(uint64_t & generatio
   return result_t_;
 }
 
+std::pair<Eigen::Isometry3d, double> SmallGicpRelocalizationNode::refinePlanarPose(
+  const pcl::PointCloud<pcl::PointXYZ> & source,
+  const Eigen::Isometry3d & seed) const
+{
+  // GICP on an XY voxel grid is a coarse estimate: changing the odom heading
+  // changes voxel membership/covariances. Refine in metres against unprojected
+  // 3D walls while allowing only x/y/yaw, as required by the published TF.
+  double best_error = std::numeric_limits<double>::infinity();
+  if (!validation_tree_ || !seed.matrix().allFinite()) {return {seed, best_error};}
+  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+  pose.translation() << seed.translation().x(), seed.translation().y(), 0.0;
+  pose.linear() = Eigen::AngleAxisd(
+    std::atan2(seed.rotation()(1, 0), seed.rotation()(0, 0)),
+    Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  Eigen::Isometry3d best = pose;
+  std::vector<Eigen::Vector3d> points;
+  for (size_t i = 0; i < source.size(); ++i) {
+    const auto & p = source[i];
+    if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+        (!registration_height_filter_ ||
+         (p.z >= registration_min_height_ && p.z <= registration_max_height_))) {
+      points.emplace_back(p.x, p.y, p.z);
+    }
+  }
+  if (points.size() < 50) {return {best, best_error};}
+  // Bound heading-search latency without letting floor density determine how
+  // many wall observations remain. Downsample only after the height filter.
+  if (points.size() > 2000) {
+    const size_t stride = (points.size() + 1999) / 2000;
+    size_t output = 0;
+    for (size_t i = 0; i < points.size(); i += stride) {points[output++] = points[i];}
+    points.resize(output);
+  }
+  const double radius_sq = std::pow(2.0 * geometric_max_distance_, 2);
+  for (int iteration = 0; iteration <= 40; ++iteration) {
+    double error = 0.0, weight_sum = 0.0;
+    Eigen::Vector2d mean_a = Eigen::Vector2d::Zero(), mean_b = mean_a;
+    Eigen::Matrix2d cross = Eigen::Matrix2d::Zero();
+    size_t matched = 0;
+    for (const auto & point : points) {
+      const Eigen::Vector3d a = pose * point;
+      size_t index;
+      double distance;
+      if (!validation_tree_->nearest_neighbor_search(
+            Eigen::Vector4d(a.x(), a.y(), a.z(), 1.0), &index, &distance)) {
+        error += radius_sq;
+        continue;
+      }
+      error += std::min(distance, radius_sq);
+      if (distance > radius_sq) {continue;}
+      const auto & target = (*validation_target_)[index];
+      const Eigen::Vector2d b(target.x, target.y);
+      const double weight = std::min(1.0, 0.05 / std::max(1e-9, std::sqrt(distance)));
+      mean_a += weight * a.head<2>();
+      mean_b += weight * b;
+      cross += weight * a.head<2>() * b.transpose();
+      weight_sum += weight;
+      ++matched;
+    }
+    error /= points.size();
+    if (error < best_error) {best = pose; best_error = error;}
+    if (matched < 50 || iteration == 40) {break;}
+    mean_a /= weight_sum;
+    mean_b /= weight_sum;
+    cross -= weight_sum * mean_a * mean_b.transpose();
+    const double angle = std::atan2(cross(0, 1) - cross(1, 0), cross.trace());
+    Eigen::Isometry3d delta = Eigen::Isometry3d::Identity();
+    delta.linear() = Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    delta.translation().head<2>() = mean_b - delta.linear().topLeftCorner<2, 2>() * mean_a;
+    if (delta.translation().norm() < 1e-5 && std::abs(angle) < 1e-5) {break;}
+    pose = delta * pose;
+  }
+  return {best, best_error};
+}
+
+bool SmallGicpRelocalizationNode::geometricFitAcceptable(
+  const pcl::PointCloud<pcl::PointXYZ> & source,
+  const Eigen::Isometry3d & pose, double required_overlap) const
+{
+  const double minimum_overlap = std::max(geometric_min_overlap_, required_overlap);
+  if (!validation_tree_ || !pose.matrix().allFinite()) {
+    return false;
+  }
+  // Validate the published planar pose against UNPROJECTED wall points.
+  // XY-only overlap can hide height mismatches and voxel weighting can hide
+  // a dense misaligned wall among many sparse nearby objects.
+  const double yaw = std::atan2(pose.rotation()(1, 0), pose.rotation()(0, 0));
+  const Eigen::Matrix3d rotation =
+    Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  size_t close = 0, count = 0;
+  const size_t step = std::max<size_t>(1, source.size() / 10000);
+  for (size_t i = 0; i < source.size(); i += step) {
+    const auto & point = source[i];
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
+        (registration_height_filter_ &&
+         (point.z < registration_min_height_ || point.z > registration_max_height_))) {
+      continue;
+    }
+    Eigen::Vector3d xyz = rotation * Eigen::Vector3d(point.x, point.y, point.z);
+    Eigen::Vector4d query(xyz.x() + pose.translation().x(),
+      xyz.y() + pose.translation().y(), xyz.z(), 1.0);
+    size_t index;
+    double squared_distance;
+    ++count;
+    if (validation_tree_->nearest_neighbor_search(query, &index, &squared_distance) &&
+        squared_distance <= geometric_max_distance_ * geometric_max_distance_) {
+      ++close;
+    }
+  }
+  const double overlap = count ? static_cast<double>(close) / count : 0.0;
+  RCLCPP_INFO(get_logger(), "Geometric 3D overlap: %.3f within %.3fm (%zu points, required %.3f)",
+    overlap, geometric_max_distance_, count, minimum_overlap);
+  return count >= 50 && overlap >= minimum_overlap;
+}
+
 bool SmallGicpRelocalizationNode::commitPose(const Eigen::Isometry3d & pose, uint64_t generation)
 {
   std::lock_guard<std::mutex> lock(pose_mutex_);
@@ -307,6 +432,8 @@ bool SmallGicpRelocalizationNode::commitPose(const Eigen::Isometry3d & pose, uin
     return false;
   }
   result_t_ = previous_result_t_ = pose;
+  last_verified_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count());
   ++pose_generation_;
   return true;
 }
@@ -384,6 +511,20 @@ void SmallGicpRelocalizationNode::prepareTargetMap()
 
   target_tree_ = std::make_shared<small_gicp::KdTree<pcl::PointCloud<pcl::PointCovariance>>>(
     target_, small_gicp::KdTreeBuilderOMP(num_threads_));
+
+  pcl::PointCloud<pcl::PointXYZ> walls;
+  for (const auto & point : *global_map_) {
+    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+        (!registration_height_filter_ ||
+         (point.z >= registration_min_height_ && point.z <= registration_max_height_))) {
+      walls.push_back(point);
+    }
+  }
+  validation_target_ = small_gicp::voxelgrid_sampling_omp<
+    pcl::PointCloud<pcl::PointXYZ>, pcl::PointCloud<pcl::PointXYZ>>(
+    walls, std::min<double>(global_leaf_size_, geometric_max_distance_ / 3.0));
+  validation_tree_ = std::make_shared<small_gicp::KdTree<pcl::PointCloud<pcl::PointXYZ>>>(
+    validation_target_, small_gicp::KdTreeBuilderOMP(num_threads_));
 
   global_map_ready_ = true;
 }
@@ -501,12 +642,16 @@ void SmallGicpRelocalizationNode::registeredPcdCallback(
 
   {
     std::lock_guard<std::recursive_mutex> lock(cloud_mutex_);
-    // Retain a complete bounded batch until the registration timer consumes it.
-    // Resetting on the next scan can repeatedly leave the timer with too few frames.
-    if (accumulated_count_ < accumulated_count_threshold_) {
-      *accumulated_cloud_ += *filtered;
-      accumulated_count_++;
+    // A sliding window keeps the most recent complete batch. Freezing the first
+    // batch until a slow timer fires makes corrections several seconds stale.
+    if (accumulated_frame_sizes_.size() >= static_cast<size_t>(accumulated_count_threshold_)) {
+      accumulated_cloud_->erase(accumulated_cloud_->begin(),
+        accumulated_cloud_->begin() + accumulated_frame_sizes_.front());
+      accumulated_frame_sizes_.pop_front();
     }
+    *accumulated_cloud_ += *filtered;
+    accumulated_frame_sizes_.push_back(filtered->size());
+    accumulated_count_ = static_cast<int>(accumulated_frame_sizes_.size());
   }
 
   if (enable_deep_verification_) {
@@ -595,6 +740,7 @@ void SmallGicpRelocalizationNode::registeredPcdCallback(
       {
         std::lock_guard<std::recursive_mutex> lock(cloud_mutex_);
         accumulated_cloud_->clear();
+        accumulated_frame_sizes_.clear();
         accumulated_count_ = 0;
       }
 
@@ -688,6 +834,7 @@ void SmallGicpRelocalizationNode::periodicRegistrationCallback()
   {
     std::lock_guard<std::recursive_mutex> lock(cloud_mutex_);
     accumulated_cloud_->clear();
+    accumulated_frame_sizes_.clear();
     accumulated_count_ = 0;
   }
 }
@@ -812,7 +959,7 @@ bool SmallGicpRelocalizationNode::performEmergencyRegistration()
   constrained.linear() = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
 
   RCLCPP_WARN(
-    this->get_logger(), "Emergency accepted: t=[%.3f, %.3f], yaw=%.3f (correction=%.3f m)",
+    this->get_logger(), "Emergency candidate: t=[%.3f, %.3f], yaw=%.3f (correction=%.3f m)",
     raw_t.x(), raw_t.y(), yaw, (constrained.translation() - current_pose.translation()).norm());
 
   // 硬限制：Emergency 修正距离不得超过 emergency_max_correction_distance_
@@ -829,7 +976,8 @@ bool SmallGicpRelocalizationNode::performEmergencyRegistration()
     return false;
   }
 
-  if (!commitPose(constrained, generation)) {
+  if (!geometricFitAcceptable(*accumulated_cloud_, constrained) ||
+      !commitPose(constrained, generation)) {
     return false;
   }
   notifyTerrainClearing();
@@ -897,10 +1045,8 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
   register_->rejector.max_dist_sq = max_dist_sq_;
   register_->optimizer.max_iterations = max_iterations_;
 
-  // Cold-start: multi-seed yaw sweep with expanded correspondence radius.
-  // The emergency search radius (8 m) provides a wider convergence basin than
-  // the default 2 m, giving GICP more room to escape local minima near the
-  // map origin when the robot starts from a stationary position.
+  // Cold-start candidates are refined against 3D geometry. Optional full
+  // heading search is still restricted to the known start's position.
   small_gicp::RegistrationResult result;
   if (!is_periodic) {
     const double saved_max_dist_sq = register_->rejector.max_dist_sq;
@@ -910,16 +1056,18 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
     // a small start offset, tight enough to reject mirror-symmetric matches.
     register_->rejector.max_dist_sq = 16.0;  // 4 m correspondence radius
 
-    // Known-start cold init: sweep NARROW yaw perturbations AROUND the init_pose
-    // seed, not absolute {0,±45,±90}.  On a centrally-symmetric competition map a
-    // wide/absolute sweep can converge to the mirror-image pose (180° flipped).
-    // The sentry always spawns from a fixed, known start, so we trust init_pose's
-    // yaw and only allow ±15° to absorb small boot-time misalignment.
+    // A narrow prior remains available. Full heading search additionally
+    // requires stronger overlap and separation from competing poses.
     const double seed_yaw =
       std::atan2(current_pose.rotation()(1, 0), current_pose.rotation()(0, 0));
     struct Seed { Eigen::Isometry3d guess; small_gicp::RegistrationResult res; double score = -1.0; };
     std::vector<Seed> seeds;
-    for (double yaw_offset_deg : {0.0, 7.5, -7.5, 15.0, -15.0}) {
+    std::vector<double> yaw_offsets{0.0, 7.5, -7.5, 15.0, -15.0};
+    if (initial_search_all_yaws_) {
+      yaw_offsets.clear();
+      for (int angle = -180; angle < 180; angle += 15) {yaw_offsets.push_back(angle);}
+    }
+    for (double yaw_offset_deg : yaw_offsets) {
       auto src_copy = std::make_shared<pcl::PointCloud<pcl::PointCovariance>>(*source_);
       Seed s;
       s.guess = current_pose;  // keep init_pose translation
@@ -927,12 +1075,17 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
         Eigen::AngleAxisd(seed_yaw + yaw_offset_deg * M_PI / 180.0, Eigen::Vector3d::UnitZ())
           .toRotationMatrix();
       s.res = register_->align(*target_, *src_copy, *target_tree_, s.guess);
+      const auto from_gicp = refinePlanarPose(*accumulated_cloud_, s.res.T_target_source);
+      const auto from_seed = refinePlanarPose(*accumulated_cloud_, s.guess);
+      const auto & refined = from_gicp.second < from_seed.second ? from_gicp : from_seed;
+      s.res.T_target_source = refined.first;
+
       const auto delta = s.res.T_target_source.translation() - current_pose.translation();
       const double candidate_yaw = std::atan2(
         s.res.T_target_source.rotation()(1, 0), s.res.T_target_source.rotation()(0, 0));
       const bool within_prior = initialCorrectionAcceptable(
         delta.x(), delta.y(), candidate_yaw - seed_yaw,
-        initial_max_correction_distance_, initial_max_correction_yaw_);
+        initial_max_correction_distance_, initial_search_all_yaws_ ? M_PI : initial_max_correction_yaw_);
       const bool acceptable = within_prior && registrationQualityAcceptable(
         s.res.converged, s.res.num_inliers, source_->size(), s.res.error,
         quality_convergence_threshold_, min_inlier_ratio_, max_fitness_error_);
@@ -945,9 +1098,12 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
         std::hypot(delta.x(), delta.y()),
         std::atan2(std::sin(candidate_yaw - seed_yaw), std::cos(candidate_yaw - seed_yaw)),
         within_prior);
-      if (acceptable && s.res.T_target_source.matrix().allFinite()) {
-        s.score = static_cast<double>(s.res.num_inliers) /
-                  (s.res.error / s.res.num_inliers + 0.001);
+      // An unrestricted heading must meet stricter physical evidence than a local correction.
+      const bool strong_fit = !initial_search_all_yaws_ ||
+        refined.second < std::pow(geometric_max_distance_ * 0.5, 2);
+      if (acceptable && strong_fit && geometricFitAcceptable(
+          *accumulated_cloud_, s.res.T_target_source, initial_search_all_yaws_ ? 0.95 : -1.0)) {
+        s.score = 1.0 / (refined.second + 1e-6);
       }
       seeds.push_back(s);
     }
@@ -958,8 +1114,24 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
       RCLCPP_WARN(get_logger(),
         "No valid cold-start candidate within %.2fm / %.2frad of init_pose. "
         "Keeping the seed; verify start position AND heading or use 2D Pose Estimate.",
-        initial_max_correction_distance_, initial_max_correction_yaw_);
+        initial_max_correction_distance_, initial_search_all_yaws_ ? M_PI : initial_max_correction_yaw_);
       return false;
+    }
+    if (initial_search_all_yaws_) {
+      // Cluster nearby solutions. Reject a second, distinctly different pose
+      // with comparable support (e.g. symmetric walls), rather than guessing.
+      for (const auto & candidate : seeds) {
+        if (candidate.score <= 0.0) {continue;}
+        const auto relative = best->res.T_target_source.inverse() * candidate.res.T_target_source;
+        const double yaw_separation = std::abs(std::atan2(relative.rotation()(1, 0), relative.rotation()(0, 0)));
+        if ((yaw_separation > 0.35 || relative.translation().head<2>().norm() > 0.4) &&
+            best->score < 1.5 * candidate.score) {
+          register_->rejector.max_dist_sq = saved_max_dist_sq;
+          RCLCPP_WARN(get_logger(), "Ambiguous initial heading: competing poses have similar 3D support; keeping localization invalid.");
+          return false;
+        }
+      }
+      RCLCPP_INFO(get_logger(), "Known-origin heading search passed strict 3D fit and ambiguity checks.");
     }
     result = best->res;
     register_->rejector.max_dist_sq = saved_max_dist_sq;
@@ -971,6 +1143,10 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
     }
   } else {
     result = register_->align(*target_, *source_, *target_tree_, current_pose);
+    const auto from_gicp = refinePlanarPose(*accumulated_cloud_, result.T_target_source);
+    const auto from_current = refinePlanarPose(*accumulated_cloud_, current_pose);
+    result.T_target_source = from_gicp.second < from_current.second ?
+      from_gicp.first : from_current.first;
   }
 
   const Eigen::Vector3d t = result.T_target_source.translation();
@@ -1075,11 +1251,12 @@ bool SmallGicpRelocalizationNode::performRegistration(bool is_periodic)
   constrained.linear() = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
 
   RCLCPP_INFO(
-    this->get_logger(), "Accepted 2D-constrained result: t=[%.3f, %.3f], yaw=%.3f", raw_t.x(),
+    this->get_logger(), "Candidate 2D-constrained result: t=[%.3f, %.3f], yaw=%.3f", raw_t.x(),
     raw_t.y(), yaw);
 
   double correction_dist = (constrained.translation() - current_pose.translation()).norm();
-  if (!commitPose(constrained, generation)) {
+  if (!geometricFitAcceptable(*accumulated_cloud_, constrained) ||
+      !commitPose(constrained, generation)) {
     return false;
   }
 
@@ -1111,7 +1288,11 @@ void SmallGicpRelocalizationNode::publishTransform()
   uint64_t generation;
   const auto pose = poseSnapshot(generation);
   std_msgs::msg::Bool valid;
-  valid.data = has_localized_.load();
+  const int64_t verified = last_verified_ns_.load();
+  const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+  valid.data = has_localized_.load() && verified > 0 &&
+    (now_ns - verified) * 1e-9 <= localization_valid_timeout_;
   localization_valid_pub_->publish(valid);
   // Keep the map-fixed RViz view connected while waiting for a match. This is
   // the configured seed, NOT a successful match; expose that distinction.
@@ -1213,6 +1394,7 @@ void SmallGicpRelocalizationNode::initialPoseCallback(
     std::lock_guard<std::mutex> lock(pose_mutex_);
     ++pose_generation_;
     previous_result_t_ = result_t_ = constrained;
+    last_verified_ns_.store(0);
     manual_pose_locked_.store(lock_after_initialpose_);
   }
   has_localized_.store(true);
@@ -1222,6 +1404,7 @@ void SmallGicpRelocalizationNode::initialPoseCallback(
   {
     std::lock_guard<std::recursive_mutex> lock(cloud_mutex_);
     accumulated_cloud_->clear();
+    accumulated_frame_sizes_.clear();
     accumulated_count_ = 0;
   }
   {
@@ -1414,10 +1597,11 @@ void SmallGicpRelocalizationNode::runDeepVerification(
 
   RCLCPP_WARN(
     this->get_logger(),
-    "Deep verification ACCEPTED: t=[%.3f, %.3f], yaw=%.3f, correction=%.3fm, score=%.0f", raw_t.x(),
+    "Deep verification candidate: t=[%.3f, %.3f], yaw=%.3f, correction=%.3fm, score=%.0f", raw_t.x(),
     raw_t.y(), yaw, correction_dist, score);
 
-  if (!commitPose(constrained, generation)) {
+  if (!geometricFitAcceptable(*accumulated_snapshot, constrained) ||
+      !commitPose(constrained, generation)) {
     return;
   }
 
@@ -1770,11 +1954,12 @@ bool SmallGicpRelocalizationNode::runGlobalRelocalization(
 
   RCLCPP_WARN(
     this->get_logger(),
-    "Global relocalization ACCEPTED in %.0fms: "
+    "Global relocalization candidate in %.0fms: "
     "t=[%.3f, %.3f], yaw=%.3f, correction=%.3fm, score=%.0f",
     elapsed_ms, raw_t.x(), raw_t.y(), final_yaw, correction, best_score);
 
-  if (!commitPose(constrained, generation)) {
+  if (!geometricFitAcceptable(*accumulated_snapshot, constrained) ||
+      !commitPose(constrained, generation)) {
     return false;
   }
   if (health_monitor_) {

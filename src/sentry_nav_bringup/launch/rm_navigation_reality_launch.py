@@ -33,6 +33,7 @@ def generate_launch_description():
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration("namespace")
+    localization_params_file = LaunchConfiguration("localization_params_file")
     slam = LaunchConfiguration("slam")
     world = LaunchConfiguration("world")
     map_yaml_file = LaunchConfiguration("map")
@@ -48,6 +49,11 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     use_foxglove = LaunchConfiguration("use_foxglove")
     use_serial_driver = LaunchConfiguration("use_serial_driver")
+
+    declare_localization_params_cmd = DeclareLaunchArgument(
+        "localization_params_file", default_value="auto",
+        description="Map-specific localization YAML; auto uses config/reality/localization/<map basename>.yaml; none disables overrides",
+    )
 
     # Declare the launch arguments
     declare_namespace_cmd = DeclareLaunchArgument(
@@ -242,6 +248,7 @@ def generate_launch_description():
             "slam": slam,
             "map": map_yaml_file,
             "prior_pcd_file": prior_pcd_file,
+            "localization_params_file": localization_params_file,
             "scan_context_db_file": scan_context_db_file,
             "use_sim_time": use_sim_time,
             "params_file": params_file,
@@ -263,6 +270,7 @@ def generate_launch_description():
     ld = LaunchDescription()
 
     # Declare the launch options
+    ld.add_action(declare_localization_params_cmd)
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_slam_cmd)
     ld.add_action(declare_world_cmd)
