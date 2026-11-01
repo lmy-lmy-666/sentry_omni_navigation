@@ -6,4 +6,8 @@
     flow_control: none
     parity: none
     stop_bits: "1"
-
+    # New MCU telemetry: reserved=0xE1, yaw=raw large-yaw encoder count.
+    # Keep disabled until feedback scale/direction and chassis-forward zero are measured.
+    yaw_encoder_calibrated: false
+    yaw_encoder_zero_count: 50272.0
+    yaw_encoder_rad_per_count: -0.00009541426552382278

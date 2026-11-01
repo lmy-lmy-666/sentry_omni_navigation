@@ -4,6 +4,8 @@
 // See rm_serial_driver.hpp for protocol overview.
 
 #include <chrono>
+#include <cmath>
+#include <stdexcept>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -37,6 +39,14 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
 {
   RCLCPP_INFO(get_logger(), "Start RMSerialDriver (protocol v3.1)");
   getParams();
+  yaw_encoder_calibrated_ = declare_parameter<bool>("yaw_encoder_calibrated", false);
+  yaw_encoder_zero_count_ = declare_parameter<double>("yaw_encoder_zero_count", 0.0);
+  yaw_encoder_rad_per_count_ = declare_parameter<double>("yaw_encoder_rad_per_count", 0.0);
+  if (!std::isfinite(yaw_encoder_zero_count_) || yaw_encoder_zero_count_ < 0.0 ||
+      yaw_encoder_zero_count_ > 65535.0 || !std::isfinite(yaw_encoder_rad_per_count_) ||
+      (yaw_encoder_calibrated_ && yaw_encoder_rad_per_count_ == 0.0)) {
+    throw std::invalid_argument("Invalid yaw encoder calibration");
+  }
 
   this->declare_parameter<bool>("enable_vel_log", false);
   this->get_parameter("enable_vel_log", enable_vel_log_);
@@ -58,6 +68,8 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
 
   gimbal_joint_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
     "serial/gimbal_joint_state", 10);
+  yaw_encoder_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>(
+    "serial/large_yaw_encoder", 10);
   chassis_attitude_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
     "serial/chassis_attitude", 10);
   robot_status_pub_ = this->create_publisher<rm_interfaces::msg::RobotStatus>(
@@ -190,17 +202,30 @@ void RMSerialDriver::handleTelemetry(const RxTelemetryPacket & pkt)
 {
   const auto stamp = now();
 
-  sensor_msgs::msg::JointState gimbal;
-  gimbal.header.stamp = stamp;
-  gimbal.name = {"gimbal_pitch_joint", "gimbal_yaw_joint"};
-  gimbal.position = {pkt.gimbal_pitch, pkt.gimbal_yaw};
-  gimbal_joint_pub_->publish(gimbal);
-
-  sensor_msgs::msg::JointState chassis;
-  chassis.header.stamp = stamp;
-  chassis.name = {"chassis_pitch", "chassis_yaw"};
-  chassis.position = {pkt.chassis_pitch, pkt.chassis_yaw};
-  chassis_attitude_pub_->publish(chassis);
+  // 0xE1 identifies raw large-yaw encoder telemetry. Legacy INS yaw must never
+  // be interpreted as a relative joint angle. Chassis attitude was placeholder
+  // zero in legacy firmware and is explicitly unavailable in this format.
+  const bool encoder_format = pkt.reserved == 0xE1;
+  const bool valid_encoder = encoder_format && std::isfinite(pkt.gimbal_yaw) &&
+    pkt.gimbal_yaw >= 0.0f && pkt.gimbal_yaw <= 65535.0f &&
+    std::floor(pkt.gimbal_yaw) == pkt.gimbal_yaw;
+  std_msgs::msg::Float32MultiArray encoder;
+  encoder.data = {pkt.gimbal_yaw, static_cast<float>(pkt.mcu_timestamp_ms),
+    valid_encoder ? 1.0f : 0.0f, static_cast<float>(pkt.reserved)};
+  yaw_encoder_pub_->publish(encoder);
+  if (valid_encoder && yaw_encoder_calibrated_) {
+    sensor_msgs::msg::JointState gimbal;
+    gimbal.header.stamp = stamp;
+    // Only large yaw is measured. Do not publish an invented pitch measurement.
+    gimbal.name = {"gimbal_yaw_joint"};
+    gimbal.position = {std::remainder(
+      (pkt.gimbal_yaw - yaw_encoder_zero_count_) * yaw_encoder_rad_per_count_,
+      6.28318530717958647692)};
+    gimbal_joint_pub_->publish(gimbal);
+  } else {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "No valid gimbal joint: require 0xE1 fresh encoder telemetry and verified calibration");
+  }
 
   rm_interfaces::msg::RobotStatus status;
   status.current_hp = pkt.current_hp;

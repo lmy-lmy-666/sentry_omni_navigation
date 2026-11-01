@@ -69,6 +69,7 @@ private:
 
   // ---------- publishers ----------
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr gimbal_joint_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr yaw_encoder_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr chassis_attitude_pub_;
   rclcpp::Publisher<rm_interfaces::msg::RobotStatus>::SharedPtr robot_status_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr chassis_status_pub_;
@@ -81,6 +82,9 @@ private:
 
   // ---------- runtime state ----------
   uint8_t current_mode_{0};
+  bool yaw_encoder_calibrated_{false};
+  double yaw_encoder_zero_count_{0.0};
+  double yaw_encoder_rad_per_count_{0.0};
   uint8_t ros_state_{2};
   float last_lx_{0.f};
   float last_ly_{0.f};
